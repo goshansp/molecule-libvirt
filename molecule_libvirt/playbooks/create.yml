@@ -1,3 +1,4 @@
+# Source: https://github.com/ansible-community/molecule-libvirt/blob/main/molecule_libvirt/playbooks/create.yml
 ---
 - name: Create
   hosts: localhost
@@ -5,208 +6,137 @@
   no_log: "{{ molecule_no_log }}"
 
   vars:
-    molecule_scenario_name: "{{ lookup('env', 'MOLECULE_SCENARIO_NAME') }}"
     user_home_directory: "{{ lookup('env', 'HOME') }}"
-    molecule_dns_suffix: "molecule.lab"
-    molecule_network_name: "molecule-libvirt"
-    molecule_bridge: "molecule-br0"
-    molecule_ssh_user: "molecule"
-    molecule_private_key_path: "{{ lookup('env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/id_ssh_rsa"
-    libvirt_default_image_path: "{{ user_home_directory}}/.local/molecule/{{ molecule_scenario_name }}/vms"
-    libvirt_vm_arch: "x86_64"
-    libvirt_uri: "qemu:///system"
-    image_url: "https://download.fedoraproject.org/pub/fedora/linux/releases/34/Cloud/x86_64/images/Fedora-Cloud-Base-34-1.2.x86_64.qcow2"
-    default_disk_size: "15G"
-    default_memory_size: "1"
-    default_vcpu: "1"
-    default_ssh_port: "22"
-    qemu_user: "qemu"
-    mac: "52:54:00:ab:cd:"  # first 5 two-digit hexadecimal numbers
-    molecule_network_cidr: "10.10.10.0/24"
-    temp_folder: "/tmp"
+    molecule_ssh_user: "{{ lookup('env', 'USER') }}"
+    molecule_private_key_path: "{{ user_home_directory }}/.ssh/id_ecdsa"
+    ssh_key_public_path: "{{ user_home_directory }}/.ssh/id_ecdsa.pub"
+    libvirt_uri: "qemu:///session"
+    mac: "52:54:00:"
+    qemu_image: fedora-coreos-42.20250609.3.0-qemu.x86_64
+    qemu_image_url: https://builds.coreos.fedoraproject.org/prod/streams/stable/builds/42.20250609.3.0/x86_64/fedora-coreos-42.20250609.3.0-qemu.x86_64.qcow2.xz
 
   tasks:
-    - name: Ensure default vm folder exists
+    - name: Set image_dir fact
+      ansible.builtin.set_fact:
+        image_dir: "{{ user_home_directory }}/.local/molecule/{{ lookup('env', 'MOLECULE_SCENARIO_NAME') }}/{{ item.name }}"
+      loop: "{{ molecule_yml.platforms }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Undefine VM and remove artifacts
+      ansible.builtin.shell: "virsh undefine {{ item.name }} --nvram --remove-all-storage --snapshots-metadata"
+      loop: "{{ molecule_yml.platforms }}"
+      loop_control:
+        label: "{{ item.name }}"
+      ignore_errors: true
+      tags:
+        - skip_ansible_lint
+
+    - name: Wipe working_dir
       ansible.builtin.file:
-        path: "{{ libvirt_default_image_path }}"
-        state: directory
-      loop: "{{ molecule_yml.platforms }}"
-      loop_control:
-        label: "{{ item.name }}"
-      delegate_to: "{{ item.libvirt_host if item.libvirt_host is defined else 'localhost' }}"
-
-    - name: Allow qemu process read qcow2 images in home directory
-      ansible.posix.acl:
-        path: "{{ user_home_directory }}"
-        entity: "{{ item.qemu_user | default(qemu_user) }}"
-        etype: user
-        permissions: x
-        state: present
-      loop: "{{ molecule_yml.platforms }}"
-      loop_control:
-        label: "{{ item.name }}"
-      delegate_to: "{{ item.libvirt_host if item.libvirt_host is defined else 'localhost' }}"
-
-    - name: Allow qemu process read qcow2 images in .local directory
-      ansible.posix.acl:
-        path: "{{ user_home_directory }}/.local"
-        entity: "{{ item.qemu_user | default(qemu_user) }}"
-        etype: user
-        permissions: x
-        state: present
-      loop: "{{ molecule_yml.platforms }}"
-      loop_control:
-        label: "{{ item.name }}"
-      delegate_to: "{{ item.libvirt_host if item.libvirt_host is defined else 'localhost' }}"
-
-    - name: Create network molecule network
-      community.libvirt.virt_net:
-        command: define
-        name: "{{ molecule_network_name }}"
-        xml: "{{ lookup('template', 'network/network.xml.j2') }}"
-        uri: "{{ qemu_uri }}"
-      loop: "{{ molecule_yml.platforms }}"
-      loop_control:
-        label: "{{ item.name }}"
-      when: (item.network_name is not defined) and (item.bridge_name is not defined)
-      vars:
-        qemu_uri: "{{ 'qemu+ssh://'+item.libvirt_user+'@'+item.libvirt_host+'/system' if item.libvirt_host is defined else libvirt_uri }}"
-
-    - name: Start network molecule network
-      community.libvirt.virt_net:
-        command: start
-        name: "{{ molecule_network_name }}"
-        uri: "{{ 'qemu+ssh://'+item.libvirt_user+'@'+item.libvirt_host+'/system' if item.libvirt_host is defined else libvirt_uri }}"
-      loop: "{{ molecule_yml.platforms }}"
-      loop_control:
-        label: "{{ item.name }}"
-      when: (item.network_name is not defined) and (item.bridge_name is not defined)
-
-    - name: Get qcow2 image
-      ansible.builtin.get_url:
-        url: "{{ item.image_url | default(image_url) }}"
-        dest: "{{ libvirt_default_image_path }}/{{ item.name }}.qcow2"
-        mode: '0660'
-      loop: "{{ molecule_yml.platforms }}"
-      loop_control:
-        label: "{{ item.name }}"
-      delegate_to: "{{ item.libvirt_host | default('localhost') }}"
-
-    - name: Generate OpenSSH key pair
-      community.crypto.openssh_keypair:
-        path: "{{ molecule_private_key_path }}"
-        size: 4096
-      register: ssh_key
-      delegate_to: "localhost"
-
-    - name: Create temporary folder
-      ansible.builtin.file:
-        path: "{{ temp_folder }}/{{ item.name }}-molecule"
-        state: directory
-      loop: "{{ molecule_yml.platforms }}"
-      loop_control:
-        label: "{{ item.name }}"
-      delegate_to: "{{ item.libvirt_host | default('localhost') }}"
-
-    - name: Create user-data from template
-      ansible.builtin.template:
-        src: user-data.j2
-        dest: "{{ temp_folder }}/{{ item.name }}-molecule/user-data"
-      loop: "{{ molecule_yml.platforms }}"
-      loop_control:
-        label: "{{ item.name }}"
-      delegate_to: "{{ item.libvirt_host | default('localhost') }}"
-
-    - name: Create meta-data from template
-      ansible.builtin.template:
-        src: meta-data.j2
-        dest: "{{ temp_folder }}/{{ item.name }}-molecule/meta-data"
-      loop: "{{ molecule_yml.platforms }}"
-      loop_control:
-        label: "{{ item.name }}"
-      delegate_to: "{{ item.libvirt_host | default('localhost') }}"
-
-    - name: Create cloud-init iso file
-      ansible.builtin.command:
-        "mkisofs -o
-        {{ libvirt_default_image_path }}/{{ item.name }}-cloud-init.iso
-        -V cidata -J -r user-data meta-data"
-      args:
-        chdir: "{{ temp_folder }}/{{ item.name }}-molecule"
-      loop: "{{ molecule_yml.platforms }}"
-      loop_control:
-        label: "{{ item.name }}"
-      delegate_to: "{{ item.libvirt_host | default('localhost') }}"
-
-    - name: Remove tempfolfer
-      ansible.builtin.file:
-        path: "{{ temp_folder }}/{{ item.name }}-molecule"
+        path: "{{ image_dir }}"
         state: absent
+
+    - name: Create working_dir
+      ansible.builtin.file:
+        path: "{{ image_dir }}"
+        state: directory
+        recurse: true
+
+    - name: Download image.xz
+      ansible.builtin.get_url:
+        url: "{{ qemu_image_url }}"
+        dest: "{{ image_dir }}/{{ qemu_image }}.qcow2.xz"
+        mode: '0600'
+
+    - name: Unxz the Image
+      ansible.builtin.command:
+        "unxz {{ image_dir }}/{{ qemu_image }}.qcow2.xz"
+      args:
+        chdir: "{{ image_dir }}"
+      delegate_to: "localhost"
+      tags:
+        - skip_ansible_lint
+
+    - name: Prepare ignition config
+      ansible.builtin.template:
+        src: config.ign.j2
+        dest: "{{ image_dir }}/{{ item.name }}-config.ign"
+        mode: '0600'
       loop: "{{ molecule_yml.platforms }}"
       loop_control:
         label: "{{ item.name }}"
-      delegate_to: "{{ item.libvirt_host | default('localhost') }}"
 
     - name: Create an image shell with the desired size
       ansible.builtin.command:
         "qemu-img create -f qcow2 -o preallocation=metadata
-        {{ item.name }}-temp.qcow2
+        {{ item.name }}-expanded.qcow2
         {{ item.disk_size | default(default_disk_size ) }}"
       args:
-        chdir: "{{ libvirt_default_image_path }}"
+        chdir: "{{ image_dir }}"
+      # environment:
+      #   LIBGUESTFS_BACKEND: direct
+      loop: "{{ molecule_yml.platforms }}"
+      loop_control:
+        label: "{{ item.name }}"
+      delegate_to: "localhost"
+      tags:
+        - skip_ansible_lint
+
+    - name: Expand original image to -expanded image
+      ansible.builtin.shell: |
+        set -o pipefail
+        umask 0002
+        virt-resize --quiet --expand /dev/sda4 {{ qemu_image }}.qcow2 {{ item.name }}-expanded.qcow2
+      args:
+        chdir: "{{ image_dir }}"
       environment:
         LIBGUESTFS_BACKEND: direct
       loop: "{{ molecule_yml.platforms }}"
       loop_control:
         label: "{{ item.name }}"
-      delegate_to: "{{ item.libvirt_host | default('localhost') }}"
+      delegate_to: "localhost"
+      tags:
+        - skip_ansible_lint
 
-    - name: Expand original image on the new sized volume
-      ansible.builtin.shell: |
-        umask 0002
-        virt-resize --quiet --expand {{ item.image_volume | default('/dev/sda1') }} {{ item.name }}.qcow2 {{ item.name }}-temp.qcow2
-        touch "{{ libvirt_default_image_path }}/.{{ item.name }}-expanded"
-      args:
-        chdir: "{{ libvirt_default_image_path }}"
-        creates: "{{ libvirt_default_image_path }}/.{{ item.name }}-expanded"
+    - name: Generate stable MAC from VM name
+      ansible.builtin.set_fact:
+        guest_vm_mac: >-
+          {{ mac }}{{
+            (item.name | hash('md5'))[0:2]
+          }}:{{
+            (item.name | hash('md5'))[2:4]
+          }}:{{
+            (item.name | hash('md5'))[4:6]
+          }}
       loop: "{{ molecule_yml.platforms }}"
       loop_control:
         label: "{{ item.name }}"
-      delegate_to: "{{ item.libvirt_host | default('localhost') }}"
-
-    - name: Move temporary file to main image
-      ansible.builtin.command:
-        "mv {{ item.name }}-temp.qcow2 {{ item.name }}.qcow2"
-      args:
-        chdir: "{{ libvirt_default_image_path }}"
-      loop: "{{ molecule_yml.platforms }}"
-      loop_control:
-        label: "{{ item.name }}"
-      delegate_to: "{{ item.libvirt_host if item.libvirt_host is defined else 'localhost' }}"
 
     - name: Define vm from xml file
       community.libvirt.virt:
+        name: "{{ item.name }}"
         command: define
-        xml: "{{ lookup('template', 'vm/vm.xml.j2') }}"
-        uri: "{{ 'qemu+ssh://'+item.libvirt_user+'@'+item.libvirt_host+'/system' if item.libvirt_host is defined else libvirt_uri }}"
+        xml: "{{ lookup('template', 'vm.xml.j2') }}"
+        uri: "{{ libvirt_uri }}"
       loop: "{{ molecule_yml.platforms }}"
       loop_control:
         label: "{{ item.name }}"
 
-    - name: Start molecule vm(s)
+    - name: Start molecule vm
       community.libvirt.virt:
         name: "{{ item.name }}"
         command: start
-        uri: "{{ 'qemu+ssh://'+item.libvirt_user+'@'+item.libvirt_host+'/system' if item.libvirt_host is defined else libvirt_uri }}"
+        uri: "{{ libvirt_uri }}"
       loop: "{{ molecule_yml.platforms }}"
       loop_control:
         label: "{{ item.name }}"
-      register: server
 
-    - name: Get instance(s) ip address
+    - name: Wait for ip to become available
       ansible.builtin.shell: >
-        virsh --connect {{ qemu_uri }}
-        domifaddr {{ item.name }} |
+        virsh --connect {{ libvirt_uri }}
+        domifaddr {{ item.name }}
+        --source arp |
         grep {{ mac }} |
         awk '{ print $4 }' |
         sed 's/\/.*//'
@@ -215,61 +145,173 @@
         label: "{{ item.name }}"
       register: instance_ip_address_local
       until: instance_ip_address_local.stdout != ""
-      retries: 10
+      retries: 60
       delay: 2
-      vars:
-        qemu_uri: "{{ 'qemu+ssh://'+item.libvirt_user+'@'+item.libvirt_host+'/system' if item.libvirt_host is defined else libvirt_uri }}"
-      when: item.bridge_name is not defined
+      tags:
+        - skip_ansible_lint
 
-    - name: Wait 35 seconds for arp table update
-      pause:
-        seconds: 35
-      vars:
-        jmesquery: "[].bridge_name"
-      when: (molecule_yml.platforms | from_yaml | json_query(jmesquery)) != []
-
-    - name: Get instance(s) running on remote host(s)
-      ansible.builtin.shell: >
-        arp -n {{ item.name }} |
-        grep -oE "\b([0-9]{1,3}\.){3}[0-9]{1,3}\b"
+    # TODO: Check if this is needed
+    - name: Populate instance config dict
+      ansible.builtin.set_fact:
+        instance_conf_dict: {
+          'instance': "{{ item.name }}",
+          'address': "{{ instance_ip_address_local.results[0].stdout }}",
+          'user': "{{ lookup('env', 'USER') }}",
+          'port': "22",
+          'identity_file': "{{ molecule_private_key_path }}"
+        }
       loop: "{{ molecule_yml.platforms }}"
       loop_control:
         label: "{{ item.name }}"
-      register: instance_ip_address_remote
-      when: item.bridge_name is defined
+      # vars:
+      #   query: "[?name=='{{ item.name }}'].stdout | [0]"
 
-    - name: Merge ip address list
+    - name: Wait for SSH to become available
+      ansible.builtin.wait_for:
+        host: "{{ instance_conf_dict.address }}"
+        port: 22
+        delay: 5
+        timeout: 600
+        state: started
+      loop: "{{ molecule_yml.platforms }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Wait for Python to become installed by ignition
+      ansible.builtin.ping:
+      register: pingresult
+      until: "pingresult is not failed"
+      retries: 60
+      delay: 10
+      loop: "{{ molecule_yml.platforms }}"
+      loop_control:
+        label: "{{ item.name }}"
+      delegate_to: "{{ instance_conf_dict.address | default('skipped_anyways_if_undefined') }}"
+      remote_user: "{{ molecule_ssh_user }}"
+      vars:
+        ansible_ssh_private_key_file: "{{ molecule_private_key_path }}"
+
+    - name: Disable zincati.service
+      ansible.builtin.systemd:
+        name: zincati.service
+        enabled: false
+        state: stopped
+      loop: "{{ molecule_yml.platforms }}"
+      loop_control:
+        label: "{{ item.name }}"
+      delegate_to: "{{ instance_conf_dict.address | default('skipped_anyways_if_undefined') }}"
+      remote_user: "{{ molecule_ssh_user }}"
+      vars:
+        ansible_ssh_private_key_file: "{{ molecule_private_key_path }}"
+
+    - name: Stop molecule instance(s)
+      community.libvirt.virt:
+        name: "{{ item.name }}"
+        command: shutdown
+        uri: "{{ libvirt_uri }}"
+      loop: "{{ molecule_yml.platforms }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Wait until molecule instance(s) is shutdown
+      community.libvirt.virt:
+        command: status
+        name: "{{ item.name }}"
+        uri: "{{ libvirt_uri }}"
+      register: instance_status
+      loop: "{{ molecule_yml.platforms }}"
+      loop_control:
+        label: "{{ item.name }}"
+      until: instance_status.status == "shutdown"
+
+    - name: Create Snapshot
+      ansible.builtin.shell: "virsh snapshot-create {{ item.name }}"
+      loop: "{{ molecule_yml.platforms }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: snapshot
+      until: snapshot.stdout is search("created")
+      tags:
+        - skip_ansible_lint
+
+    # STUFF to always do in create.yml
+    # TODO: Always delete snapshot, boot, patch and re-create snapshot?
+
+    - name: Start molecule vm(s)
+      community.libvirt.virt:
+        name: "{{ item.name }}"
+        command: start
+        uri: "{{ libvirt_uri }}"
+      loop: "{{ molecule_yml.platforms }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Wait for ip to become available
+      ansible.builtin.shell: >
+        virsh --connect {{ libvirt_uri }}
+        domifaddr {{ item.name }}
+        --source arp |
+        grep {{ mac }} |
+        awk '{ print $4 }' |
+        sed 's/\/.*//'
+      loop: "{{ molecule_yml.platforms }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: instance_ip_address_local
+      until: instance_ip_address_local.stdout != ""
+      retries: 60
+      delay: 2
+      tags:
+        - skip_ansible_lint
+
+    - name: Wait for DNS resolution
+      ansible.builtin.shell: "getent hosts {{ item.name.split('.')[0] }}"
+      register: dns_check
+      retries: 300
+      delay: 1
+      until: dns_check.rc == 0
+      ignore_errors: true
+      loop: "{{ molecule_yml.platforms }}"
+      loop_control:
+        label: "{{ item.name }}"
+      tags:
+        - skip_ansible_lint
+
+    - name: Wait for ping reply
+      ansible.builtin.command: ping -c 1 {{ item.name.split('.')[0] }}
+      register: ping_check
+      retries: 300
+      delay: 1
+      until: ping_check.rc == 0
+      ignore_errors: true
+      loop: "{{ molecule_yml.platforms }}"
+      loop_control:
+        label: "{{ item.name }}"
+      tags:
+        - skip_ansible_lint
+
+    - name: Populate instance config dict
       ansible.builtin.set_fact:
-        instance_ip_address: "{{ (instance_ip_address_local.results |
-          json_query('[?stdout].{name: item.name, stdout: stdout}')) +
-          (instance_ip_address_remote.results |
-          json_query('[?stdout].{name: item.name, stdout: stdout}')) }}"
+        instance_conf_dict: {
+          'instance': "{{ item.name }}",
+          'address': "{{ instance_ip_address_local.results[0].stdout }}",
+          'user': "{{ lookup('env', 'USER') }}",
+          'port': "22",
+          'identity_file': "{{ molecule_private_key_path }}"
+        }
+      loop: "{{ molecule_yml.platforms }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: instance_config_dict
+      # vars:
+      #   query: "[?name=='{{ item.name }}'].stdout | [0]"
 
-    - when: instance_ip_address != []
-      block:
+    - name: Convert instance config dict to a list
+      ansible.builtin.set_fact:
+        instance_conf: "{{ instance_config_dict.results | map(attribute='ansible_facts.instance_conf_dict') | list }}"
 
-        - name: Populate instance config dict
-          ansible.builtin.set_fact:
-            instance_conf_dict: {
-              'instance': "{{ item.name }}",
-              'address': "{{ instance_ip_address | json_query(query) }}",
-              'user': "{{ molecule_ssh_user }}",
-              'port': "{{ item.ssh_port | default(default_ssh_port)}}",
-              'identity_file': "{{ molecule_private_key_path }}",
-            }
-          loop: "{{  molecule_yml.platforms }}"
-          loop_control:
-            label: "{{ item.name }}"
-          register: instance_config_dict
-          vars:
-            query: "[?name=='{{ item.name}}'].stdout | [0]"
-
-        - name: Convert instance config dict to a list
-          ansible.builtin.set_fact:
-            instance_conf: "{{ instance_config_dict.results | map(attribute='ansible_facts.instance_conf_dict') | list }}"
-
-        - name: Dump instance config
-          copy:
-            content: "{{ instance_conf | to_json | from_json | to_yaml }}"
-            dest: "{{ molecule_instance_config }}"
-            mode: '0600'
+    - name: Dump instance config
+      ansible.builtin.copy:
+        content: "{{ instance_conf | to_json | from_json | to_yaml }}"
+        dest: "{{ molecule_instance_config }}"
+        mode: '0600'

@@ -1,10 +1,3 @@
-<!--
-WARNING: THIS IS AN AUTO-GENERATED FILE. CHANGES TO IT ARE LIKELY TO BE
-OVERWRITTEN AND LOST. Changes to this xml configuration should be made using:
-  virsh edit rhel7.4
-or other application using the libvirt API.
--->
-
 <domain type='kvm'>
   <name>{{ item.name }}</name>
   <uuid>{{ lookup('lines', 'uuidgen') }}</uuid>
@@ -15,13 +8,16 @@ or other application using the libvirt API.
     <type arch='{{ item.arch | default("x86_64")}}' machine='pc'>hvm</type>
     <boot dev='hd'/>
   </os>
+  <sysinfo type='fwcfg'>
+    <entry name='opt/com.example/name'>example value</entry>
+    <entry name='opt/com.coreos/config' file='{{ image_dir }}/{{ item.name }}-config.ign'/>
+  </sysinfo>
   <features>
     <acpi/>
     <apic/>
     <vmport state='off'/>
   </features>
-  <cpu mode='custom' match='exact' check='none'>
-    <model fallback='allow'>{{ item.cpu_model | default('qemu64')}}</model>
+  <cpu mode="host-passthrough" check="none" migratable="on">
   </cpu>
   <clock offset='utc'>
     <timer name='rtc' tickpolicy='catchup'/>
@@ -38,24 +34,13 @@ or other application using the libvirt API.
   <devices>
     <disk type='file' device='disk'>
       <driver name='qemu' type='qcow2'/>
-      <source file='{{ libvirt_default_image_path }}/{{ item.name }}.qcow2'/>
+      <source file='{{ image_dir }}/{{ item.name }}-expanded.qcow2'/>
       <target dev='vda' bus='virtio'/>
       <address type='pci' domain='0x0000' bus='0x00' slot='0x07' function='0x0'/>
     </disk>
-    <disk type='file' device='cdrom'>
-      <driver name='qemu' type='raw'/>
-      <source file='{{ libvirt_default_image_path }}/{{ item.name }}-cloud-init.iso'/>
-      <target dev='hda' bus='ide'/>
-      <readonly/>
-      <address type='drive' controller='0' bus='0' target='0' unit='0'/>
-    </disk>
-    <interface type='{{ "network" if item.bridge_name is not defined else "bridge" }}'>
-      <mac address='{{ mac }}{{ range(10, 99) | random }}'/>
-{% if item.bridge_name is not defined %}
-      <source network='{{ item.network_name if item.network_name is defined else molecule_network_name }}'/>
-{% elif item.bridge_name is defined %}
-      <source bridge='{{ item.bridge_name }}'/>
-{% endif %}
+    <interface type='bridge'>
+      <mac address='{{ guest_vm_mac }}'/>
+      <source bridge="virbr0"/>
       <model type='virtio'/>
       <address type='pci' domain='0x0000' bus='0x00' slot='0x03' function='0x0'/>
     </interface>

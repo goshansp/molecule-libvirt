@@ -1,3 +1,39 @@
+# poc scope
+Molecule Driver for Image based OS like Fedora CoreOS on libvirt... POC
+
+# next steps
+1. make it work with default or rhel-edge
+1. publish package on a repo
+1. poc it ansible_role_template
+1. add other scenarios
+
+
+# questions
+- install dev folder without need for build?
+
+
+# build flow
+```
+python -m venv ~/.local/venv-molecule
+source ~/.local/venv-molecule/bin/activate
+
+pip install build libvirt-python
+
+python -m build
+pip install . --force
+
+```
+
+
+# publish to github?
+
+
+
+
+
+
+
+
 ***********************
 Molecule libvirt Plugin
 ***********************
@@ -167,6 +203,7 @@ Authors
 * Gaëtan Trellu
 * Gariele Cerami
 * Sorin Sbarnea
+* Hanspeter Gosteli
 
 .. _license:
 
